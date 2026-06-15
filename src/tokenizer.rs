@@ -1,6 +1,28 @@
-use std::{any::Any, io};
+use std::io;
 
 use crate::utf8_reader::{Error as Utf8ReaderError, Utf8Reader};
+
+fn is_alphanumeric(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+fn identifier_or_keyword(s: String) -> TokenKind {
+    use TokenKind::*;
+    match s.as_str() {
+        "true" => True,
+        "false" => False,
+        "let" => Let,
+        "const" => Const,
+        "if" => If,
+        "else" => Else,
+        "fn" => Fn,
+        "struct" => Struct,
+        "for" => For,
+        "return" => Return,
+        "in" => In,
+        _ => Identifier(s),
+    }
+}
 
 #[derive(Debug)]
 pub enum Error {
@@ -13,8 +35,16 @@ pub enum Error {
     EmptyData,
 }
 
+pub struct Token {
+    starts_at_line: usize,
+    starts_at_column: usize,
+    ends_at_line: usize,
+    ends_at_column: usize,
+    kind: TokenKind,
+}
+
 #[derive(Clone, Debug)]
-pub enum Token {
+pub enum TokenKind {
     LParen,      // (
     RParen,      // )
     LBrace,      // {
@@ -68,23 +98,30 @@ pub enum Token {
     Comment,      // //
 
     String(String),
-    RawString(String), // starts with ` 	TODO:
-    Char,              // starts with ' 	TODO:
-    Int,               // TODO: 123 or 1_2_3, or 1_23
-    Float,             // TODO: same as int but with '.'
-    True,              //  TODO: true
-    False,             //  TODO: false
+    Char(char), // starts with ' 	TODO:
+    Int(i128),
+    Float(f64), // TODO: add this format .01
+    True,       //  true
+    False,      //  false
 
-    Let,                //  TODO: let
-    Const,              //  TODO: const
-    If,                 // if TODO:
-    Else,               // TODO: else
-    Fn,                 // TODO: fn
-    Struct,             // TODO:struct
-    For,                // TODO: for
-    Return,             // TODO: return
-    Identifier(String), // TODO: starts with _ or any letter and can contain any letter or digit or '_'
+    Let,                //  let
+    Const,              // const
+    If,                 // if
+    Else,               //  else
+    Fn,                 //  fn
+    Struct,             // struct
+    For,                //  for
+    Return,             //  return
+    In,                 //  in
+    Identifier(String), //  starts with _ or any letter and can contain any letter or digit or '_'
     EOF,
+}
+
+impl PartialEq for TokenKind {
+    fn eq(&self, other: &Self) -> bool {
+        use std::mem::discriminant;
+        discriminant(self) == discriminant(other)
+    }
 }
 
 pub struct Lexer<'r, R> {
@@ -105,7 +142,7 @@ impl<'r, R: io::Read> Lexer<'r, R> {
                     Ok(c) => Some(c),
                     Err(e) => return Err(Error::ReaderError(e)),
                 },
-                None => return Err(Error::EmptyData),
+                None => None,
             },
             col: 0,
             line: 1,
@@ -131,10 +168,10 @@ impl<'r, R: io::Read> Lexer<'r, R> {
     fn advice_if_match(
         &mut self,
         expected: char,
-        default: Token,
-        matched: Token,
+        default: TokenKind,
+        matched: TokenKind,
         next_char: Option<char>,
-    ) -> Result<Token, Error> {
+    ) -> Result<TokenKind, Error> {
         match next_char {
             Some(c) => {
                 if c != expected {
@@ -154,8 +191,8 @@ impl<'r, R: io::Read> Lexer<'r, R> {
         Ok(())
     }
 
-    fn next_token(&mut self) -> Result<Option<Token>, Error> {
-        use Token::*;
+    fn next_token_kind(&mut self) -> Result<Option<TokenKind>, Error> {
+        use TokenKind::*;
         let current_char = match self.current_char {
             Some(c) => c,
             None => {
@@ -174,7 +211,7 @@ impl<'r, R: io::Read> Lexer<'r, R> {
                     self.line += 1;
                 }
                 self.seek()?;
-                return self.next_token();
+                return self.next_token_kind();
             }
             '(' => LParen,
             ')' => RParen,
@@ -186,10 +223,7 @@ impl<'r, R: io::Read> Lexer<'r, R> {
             '.' => {
                 let next_char = self.seek()?;
                 let token = match self.advice_if_match('.', Dot, Range, next_char)? {
-                    Range => {
-                        let next_char = self.seek()?;
-                        self.advice_if_match('=', Range, RangeIncl, next_char)?
-                    }
+                    Range => self.advice_if_match('=', Range, RangeIncl, self.current_char)?,
                     _ => Dot,
                 };
                 return Ok(Some(token));
@@ -214,7 +248,7 @@ impl<'r, R: io::Read> Lexer<'r, R> {
                 let next_char = self.seek()?;
                 let token = match self.advice_if_match('-', Sub, Dec, next_char)? {
                     Sub => match self.advice_if_match('=', Sub, SubAssign, next_char)? {
-                        Sub => self.advice_if_match('=', Sub, ArrowRight, next_char)?,
+                        Sub => self.advice_if_match('>', Sub, ArrowRight, next_char)?,
                         _ => SubAssign,
                     },
                     _ => Dec,
@@ -230,7 +264,7 @@ impl<'r, R: io::Read> Lexer<'r, R> {
                 let token = match self.advice_if_match('/', Div, Comment, next_char)? {
                     Comment => {
                         self.skip_comment()?;
-                        return self.next_token();
+                        return self.next_token_kind();
                     }
                     _ => self.advice_if_match('=', Div, DivAssign, next_char)?,
                 };
@@ -264,7 +298,7 @@ impl<'r, R: io::Read> Lexer<'r, R> {
                 let next_char = self.seek()?;
                 return Ok(Some(self.advice_if_match('=', Xor, XorAssign, next_char)?));
             }
-            '~' => Token::BitNot,
+            '~' => TokenKind::BitNot,
             '!' => {
                 let next_char = self.seek()?;
                 return Ok(Some(self.advice_if_match('=', Not, NotEqual, next_char)?));
@@ -293,24 +327,91 @@ impl<'r, R: io::Read> Lexer<'r, R> {
             }
             '"' => return Ok(Some(self.parse_string()?)),
             '\'' => return Ok(Some(self.parse_char()?)),
+            '0'..='9' => return Ok(Some(self.parse_number()?)),
+            '_' | 'a'..='z' | 'A'..='Z' => return Ok(Some(self.parse_identifier_or_keyword()?)),
             _ => todo!(),
         };
         self.seek()?;
         Ok(Some(token))
     }
+    fn parse_identifier_or_keyword(&mut self) -> Result<TokenKind, Error> {
+        let mut chars = Vec::new();
+        while let Some(c) = self.current_char
+            && is_alphanumeric(c)
+        {
+            chars.push(c);
+            self.seek()?;
+        }
+        Ok(identifier_or_keyword(chars.iter().collect::<String>()))
+    }
+    fn parse_number(&mut self) -> Result<TokenKind, Error> {
+        let mut is_float = false;
+        let mut num_chars = Vec::<char>::new();
+        while let Some(c) = self.current_char
+            && (c.is_numeric() || c == '_' || c == '.')
+        {
+            match c {
+                '_' => {
+                    if let Some(lc) = num_chars.last()
+                        && *lc == '_'
+                    {
+                        return Err(Error::LexerError {
+                            cause: "_ must separate successive digit".into(),
+                            line: self.line,
+                            column: self.col,
+                        });
+                    }
+                }
+                '.' => {
+                    if is_float {
+                        return Err(Error::LexerError {
+                            cause: "symbol . (dot) cannot appear in float number literal twice"
+                                .into(),
+                            line: self.line,
+                            column: self.col,
+                        });
+                    } else {
+                        num_chars.push(c);
+                        is_float = true;
+                    }
+                }
+                '0'..='9' => num_chars.push(c),
+                _ => unreachable!(),
+            }
+            self.seek()?;
+        }
+        if is_float {
+            return match num_chars.iter().collect::<String>().parse::<f64>() {
+                Err(e) => Err(Error::LexerError {
+                    cause: format!("float parsing error: {e}"),
+                    line: self.line,
+                    column: self.col,
+                }),
+                Ok(n) => Ok(TokenKind::Float(n)),
+            };
+        }
+        match num_chars.iter().collect::<String>().parse::<i128>() {
+            Err(e) => Err(Error::LexerError {
+                cause: format!("int parsing error: {e}"),
+                line: self.line,
+                column: self.col,
+            }),
+            Ok(n) => Ok(TokenKind::Int(n)),
+        }
+    }
 
-    fn parse_char(&mut self) -> Result<Token, Error> {
+    fn parse_char(&mut self) -> Result<TokenKind, Error> {
         todo!()
     }
 
-    fn parse_string(&mut self) -> Result<Token, Error> {
+    fn parse_string(&mut self) -> Result<TokenKind, Error> {
         let mut string_chars = Vec::<char>::new();
         while let Some(char) = self.seek()? {
             match char {
                 '"' => {
                     return {
                         self.seek()?;
-                        Ok(Token::String(string_chars.iter().collect::<String>()))
+                        Ok(TokenKind::String(string_chars.iter().collect::<String>()))
                     };
                 }
                 '\n' => {
@@ -329,15 +430,27 @@ impl<'r, R: io::Read> Lexer<'r, R> {
             column: self.col,
         })
     }
+
+    fn new_token(&self, start_line: usize, start_col: usize, kind: TokenKind) -> Token {
+        return Token {
+            starts_at_line: start_line,
+            starts_at_column: start_col,
+            ends_at_line: self.line,
+            ends_at_column: self.col,
+            kind,
+        };
+    }
 }
 
 impl<'r, R: io::Read> Iterator for Lexer<'r, R> {
     type Item = Result<Token, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.next_token() {
+        let start_col = self.col;
+        let start_line = self.line;
+        match self.next_token_kind() {
             Ok(o) => match o {
-                Some(t) => Some(Ok(t)),
+                Some(k) => Some(Ok(self.new_token(start_line, start_col, k))),
                 None => None,
             },
             Err(e) => Some(Err(e)),
@@ -350,30 +463,202 @@ mod test {
     use crate::tokenizer::Lexer;
     use crate::utf8_reader::Utf8Reader;
     use std::io::{Cursor, Read};
-    #[test]
-    fn lexer_tokens_basic_test() {
-        use crate::tokenizer::Token::*;
-        let string = " +=-=---\n(([])) )}]".to_string();
 
-        let expected_tokens = vec![
-            AddAssign, SubAssign, Dec, Sub, LParen, LParen, LBraket, RBraket, RParen, RParen,
-            RParen, RBrace, RBraket,
+    #[test]
+    fn simple_tokens() {
+        use crate::tokenizer::TokenKind::*;
+        let string = r#"
+(
+)
+{
+}
+[
+]
+,
+.
+<-
+->
+..
+..=
+:
+::
++
+++
+-
+--
+*
+/
+%
+=
+:=
++=
+-=
+*=
+/=
+%=
+|=
+&=
+<<=
+>>=
+^=
+==
+|
+||
+&
+&&
+<
+<=
+>
+>=
+<<
+>>
+~
+^
+!
+!=
+// This Commment should be skipped
+true
+false
+let
+const
+if
+else
+fn
+struct
+for
+return
+in
+_1dentifier
+Identifier
+iDentifier
+identifi_er_
+identifier
+123
+123.123
+1_2_3
+1_2_3.1_2_3
+"#
+        .to_string();
+
+        let expected_token_kinds = vec![
+            LParen,
+            RParen,
+            LBrace,
+            RBrace,
+            LBraket,
+            RBraket,
+            Comma,
+            Dot,
+            ArrowLeft,
+            ArrowRight,
+            Range,
+            RangeIncl,
+            Colon,
+            ColonColon,
+            Add,
+            Inc,
+            Sub,
+            Dec,
+            Star,
+            Div,
+            Mod,
+            Assign,
+            ShortAssign,
+            AddAssign,
+            SubAssign,
+            MulAssign,
+            DivAssign,
+            ModAssign,
+            BitOrAssign,
+            BitAndAssign,
+            ShLAssign,
+            ShRAssign,
+            XorAssign,
+            Equal,
+            BitOr,
+            Or,
+            Amp,
+            And,
+            Less,
+            LessEq,
+            Great,
+            GreatEq,
+            ShL,
+            ShR,
+            BitNot,
+            Xor,
+            Not,
+            NotEqual,
+            //
+            True,
+            False,
+            //
+            Let,
+            Const,
+            If,
+            Else,
+            Fn,
+            Struct,
+            For,
+            Return,
+            In,
+            Identifier("_1dentifier".into()),
+            Identifier("Identifier".into()),
+            Identifier("iDentifier".into()),
+            Identifier("identifi_er_".into()),
+            Identifier("identifier".into()),
+            //
+            Int(123),
+            Float(123.123),
+            Int(123),
+            Float(123.123),
+            EOF,
         ];
 
         let mut reader = Utf8Reader::new(Cursor::new(string.clone().into_bytes()).bytes());
-        let mut lexer = Lexer::new(&mut reader).expect("unexpecetd error while creating lexer");
+        let lexer = Lexer::new(&mut reader).expect("unexpecetd error while creating lexer");
 
-        for (token_result, expected_token) in lexer.zip(expected_tokens) {
+        for (token_result, expected_token_kind) in lexer.zip(expected_token_kinds) {
             let token = token_result
                 .map_err(|e| {
                     format!(
                         "unexpeceted error, expected token {:?}, got error: {:?}",
-                        expected_token, e
+                        expected_token_kind, e
                     )
                 })
                 .unwrap();
-            assert_eq!(format!("{:?}", token), format!("{:?}", expected_token))
+            assert_eq!(token.kind, expected_token_kind);
+            match (token.kind, expected_token_kind) {
+                (Identifier(g), Identifier(e)) | (String(g), String(e)) => assert_eq!(g, e),
+                (_, _) => (),
+            }
         }
-        assert!(false);
+    }
+
+    #[test]
+    fn empty_input() {
+        use crate::tokenizer::TokenKind::*;
+        let string = "".to_string();
+
+        let mut reader = Utf8Reader::new(Cursor::new(string.clone().into_bytes()).bytes());
+        let mut lexer = Lexer::new(&mut reader).expect("unexpecetd error while creating lexer");
+        if let Some(token_result) = lexer.next() {
+            assert_eq!(token_result.unwrap().kind, EOF)
+        }
+    }
+
+    #[test]
+    fn string() {
+        use crate::tokenizer::TokenKind::*;
+        let string = "\"this is a string\"".to_string();
+
+        let mut reader = Utf8Reader::new(Cursor::new(string.clone().into_bytes()).bytes());
+        let mut lexer = Lexer::new(&mut reader).expect("unexpecetd error while creating lexer");
+        if let Some(token_result) = lexer.next() {
+            assert_eq!(
+                token_result.unwrap().kind,
+                String("this is a string".to_string())
+            )
+        }
     }
 }

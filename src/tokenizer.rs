@@ -401,7 +401,35 @@ impl<'r, R: io::Read> Lexer<'r, R> {
     }
 
     fn parse_char(&mut self) -> Result<TokenKind, Error> {
-        todo!()
+        match self.seek()? {
+            Some(c) => {
+                if c == '\\' {
+                    todo!();
+                } else if c == '\'' {
+                    Err(Error::LexerError {
+                        cause: "empty char literal".into(),
+                        line: self.line,
+                        column: self.col,
+                    })
+                } else if let Some(next_char) = self.seek()?
+                    && next_char == '\''
+                {
+                    self.seek()?;
+                    Ok(TokenKind::Char(c))
+                } else {
+                    Err(Error::LexerError {
+                        cause: "unterminated char literal".into(),
+                        line: self.line,
+                        column: self.col,
+                    })
+                }
+            }
+            None => Err(Error::LexerError {
+                cause: "unterminated char literal".into(),
+                line: self.line,
+                column: self.col,
+            }),
+        }
     }
 
     fn parse_string(&mut self) -> Result<TokenKind, Error> {
@@ -533,6 +561,8 @@ Identifier
 iDentifier
 identifi_er_
 identifier
+"simple string"
+'c'
 123
 123.123
 1_2_3
@@ -607,6 +637,8 @@ identifier
             Identifier("iDentifier".into()),
             Identifier("identifi_er_".into()),
             Identifier("identifier".into()),
+            String("simple string".into()),
+            Char('c'),
             //
             Int(123),
             Float(123.123),
@@ -630,6 +662,7 @@ identifier
             assert_eq!(token.kind, expected_token_kind);
             match (token.kind, expected_token_kind) {
                 (Identifier(g), Identifier(e)) | (String(g), String(e)) => assert_eq!(g, e),
+                (Char(g), Char(e)) => assert_eq!(g, e),
                 (_, _) => (),
             }
         }

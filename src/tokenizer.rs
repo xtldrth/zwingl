@@ -35,12 +35,19 @@ pub enum Error {
     EmptyData,
 }
 
+#[derive(Clone)]
 pub struct Token {
-    starts_at_line: usize,
-    starts_at_column: usize,
-    ends_at_line: usize,
-    ends_at_column: usize,
+    pub starts_at_line: usize,
+    pub starts_at_column: usize,
+    pub ends_at_line: usize,
+    pub ends_at_column: usize,
     kind: TokenKind,
+}
+
+impl Token {
+    pub fn kind(&self) -> TokenKind {
+        self.kind.clone()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -98,7 +105,7 @@ pub enum TokenKind {
     Comment,      // //
 
     String(String),
-    Char(char), // starts with ' 	TODO:
+    Char(char), // starts with ' TODO: add special symbols support like '\n' and so on
     Int(i128),
     Float(f64), // TODO: add this format .01
     True,       //  true

@@ -131,30 +131,31 @@ impl PartialEq for TokenKind {
     }
 }
 
-pub struct Lexer<'r, R> {
-    chars_reader: &'r mut Utf8Reader<R>,
+pub struct Lexer<R> {
+    chars_reader: Utf8Reader<R>,
     current_char: Option<char>,
     col: usize,
     line: usize,
     is_eof_reached: bool,
 }
 
-impl<'r, R: io::Read> Lexer<'r, R> {
-    pub fn new(chars_reader: &'r mut Utf8Reader<R>) -> Result<Self, Error> {
-        let curr_char = chars_reader.next();
-        Ok(Self {
+impl<R: io::Read> Lexer<R> {
+    pub fn new(chars_reader: Utf8Reader<R>) -> Result<Self, Error> {
+        let mut l = Self {
             chars_reader,
-            current_char: match curr_char {
-                Some(r) => match r {
-                    Ok(c) => Some(c),
-                    Err(e) => return Err(Error::ReaderError(e)),
-                },
-                None => None,
-            },
+            current_char: None,
             col: 0,
             line: 1,
             is_eof_reached: false,
-        })
+        };
+        l.current_char = match l.chars_reader.next() {
+            Some(res) => match res {
+                Ok(c) => Some(c),
+                Err(e) => return Err(Error::ReaderError(e)),
+            },
+            None => None,
+        };
+        Ok(l)
     }
 
     fn get_next_char(&mut self) -> Result<Option<char>, Error> {
@@ -477,7 +478,7 @@ impl<'r, R: io::Read> Lexer<'r, R> {
     }
 }
 
-impl<'r, R: io::Read> Iterator for Lexer<'r, R> {
+impl<R: io::Read> Iterator for Lexer<R> {
     type Item = Result<Token, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -498,6 +499,13 @@ mod test {
     use crate::tokenizer::Lexer;
     use crate::utf8_reader::Utf8Reader;
     use std::io::{Cursor, Read};
+
+    fn new_lexer(input: &str) -> Lexer<Cursor<Vec<u8>>> {
+        Lexer::new(Utf8Reader::new(
+            Cursor::new(input.to_string().clone().into_bytes()).bytes(),
+        ))
+        .expect("unexpecetd error while creating lexer")
+    }
 
     #[test]
     fn simple_tokens() {
@@ -574,8 +582,7 @@ identifier
 123.123
 1_2_3
 1_2_3.1_2_3
-"#
-        .to_string();
+"#;
 
         let expected_token_kinds = vec![
             LParen,
@@ -654,8 +661,7 @@ identifier
             EOF,
         ];
 
-        let mut reader = Utf8Reader::new(Cursor::new(string.clone().into_bytes()).bytes());
-        let lexer = Lexer::new(&mut reader).expect("unexpecetd error while creating lexer");
+        let lexer = new_lexer(&string);
 
         for (token_result, expected_token_kind) in lexer.zip(expected_token_kinds) {
             let token = token_result
@@ -678,10 +684,7 @@ identifier
     #[test]
     fn empty_input() {
         use crate::tokenizer::TokenKind::*;
-        let string = "".to_string();
-
-        let mut reader = Utf8Reader::new(Cursor::new(string.clone().into_bytes()).bytes());
-        let mut lexer = Lexer::new(&mut reader).expect("unexpecetd error while creating lexer");
+        let mut lexer = new_lexer("");
         if let Some(token_result) = lexer.next() {
             assert_eq!(token_result.unwrap().kind, EOF)
         }
@@ -690,10 +693,7 @@ identifier
     #[test]
     fn string() {
         use crate::tokenizer::TokenKind::*;
-        let string = "\"this is a string\"".to_string();
-
-        let mut reader = Utf8Reader::new(Cursor::new(string.clone().into_bytes()).bytes());
-        let mut lexer = Lexer::new(&mut reader).expect("unexpecetd error while creating lexer");
+        let mut lexer = new_lexer("\"this is a string\"");
         if let Some(token_result) = lexer.next() {
             assert_eq!(
                 token_result.unwrap().kind,

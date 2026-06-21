@@ -1,18 +1,9 @@
-use crate::{
-    ast::BinOp::{Add, Sub},
-    tokenizer::{
-        Error as LexerError, Lexer, Token,
-        TokenKind::{self, EOF},
-    },
-};
+use crate::tokenizer::{Error as LexerError, Lexer, Token, TokenKind};
 use core::fmt;
-use std::{
-    fmt::{Display, write},
-    io,
-};
+use std::{fmt::Display, io};
 
 #[derive(Debug)]
-enum Error {
+pub enum Error {
     LexerError(LexerError),
     UnexpectedToken {
         kind: TokenKind,
@@ -26,6 +17,7 @@ enum Error {
         cause: Option<String>,
     },
     TryToGetTokenAfterEOF,
+    RepeatedNonassociativeOP,
 }
 
 impl Error {
@@ -37,7 +29,7 @@ impl Error {
             line: token.starts_at_line,
         };
     }
-    pub fn unexpected_token_with_expected(token: Token, expected: TokenKind) -> Self {
+    pub fn unexpected_token_with_expected_kind(token: Token, expected: TokenKind) -> Self {
         return Self::UnexpectedToken {
             kind: token.kind(),
             expected: Some(expected),
@@ -50,8 +42,8 @@ impl Error {
 #[derive(Debug, Clone, Copy)]
 pub enum BinOp {
     Dot,
-    Range,
-    RangeIncl,
+    Rng,
+    RngInc,
     ColonColon,
     Add,
     Sub,
@@ -71,18 +63,40 @@ pub enum BinOp {
     Shl,
     Shr,
     Xor,
+}
 
-    Assign,
-    AddA,
-    SubA,
-    MulA,
-    DivA,
-    ModA,
-    BOrA,
-    BAndA,
-    ShlA,
-    ShrA,
-    XorA,
+#[derive(Debug, Clone, Copy)]
+pub enum AssignOp {
+    Common,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    BOr,
+    BAnd,
+    Shl,
+    Shr,
+    Xor,
+}
+
+impl Display for AssignOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use AssignOp::*;
+        match self {
+            Common => write!(f, "=",),
+            Add => write!(f, "+=",),
+            Sub => write!(f, "-=",),
+            Mul => write!(f, "*=",),
+            Div => write!(f, "/=",),
+            Mod => write!(f, "%=",),
+            BOr => write!(f, "|=",),
+            BAnd => write!(f, "&=",),
+            Shl => write!(f, "<<=",),
+            Shr => write!(f, ">>=",),
+            Xor => write!(f, "^=",),
+        }
+    }
 }
 
 impl Display for BinOp {
@@ -90,8 +104,8 @@ impl Display for BinOp {
         use BinOp::*;
         match self {
             Dot => write!(f, ".",),
-            Range => write!(f, "..",),
-            RangeIncl => write!(f, "..=",),
+            Rng => write!(f, "..",),
+            RngInc => write!(f, "..=",),
             ColonColon => write!(f, "::",),
             Add => write!(f, "+",),
             Sub => write!(f, "-",),
@@ -111,38 +125,21 @@ impl Display for BinOp {
             Shl => write!(f, "<<",),
             Shr => write!(f, ">>",),
             Xor => write!(f, "^",),
-
-            Assign => write!(f, "=",),
-            AddA => write!(f, "+=",),
-            SubA => write!(f, "-=",),
-            MulA => write!(f, "*=",),
-            DivA => write!(f, "/=",),
-            ModA => write!(f, "%=",),
-            BOrA => write!(f, "|=",),
-            BAndA => write!(f, "&=",),
-            ShlA => write!(f, "<<=",),
-            ShrA => write!(f, ">>=",),
-            XorA => write!(f, "^=",),
         }
     }
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum UnOp {
-    // prefix OPs
+pub enum UnPrefOp {
     Plus,
     Minus,
     Ref,
     DRef,
     Not,
     BNot,
-
-    // postfix OPs
-    Inc,
-    Dec,
 }
 
-impl Display for UnOp {
+impl Display for UnPrefOp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Plus => write!(f, "+",),
@@ -151,6 +148,19 @@ impl Display for UnOp {
             Self::DRef => write!(f, "*",),
             Self::Not => write!(f, "!",),
             Self::BNot => write!(f, "~",),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum UnPostOp {
+    Inc,
+    Dec,
+}
+
+impl Display for UnPostOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
             Self::Inc => write!(f, "++",),
             Self::Dec => write!(f, "--",),
         }
@@ -164,9 +174,18 @@ pub enum Expr {
         rhs: Box<Expr>,
         op: BinOp,
     },
-    Unary {
-        op: UnOp,
-        operand: Box<Expr>,
+    UnaryPrefix {
+        op: UnPrefOp,
+        rhs: Box<Expr>,
+    },
+    UnaryPostfix {
+        op: UnPostOp,
+        lhs: Box<Expr>,
+    },
+    Assign {
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+        op: AssignOp,
     },
     Atom(Atom),
 }
@@ -183,14 +202,10 @@ impl Display for Expr {
                     fields_values: _,
                 } => todo!(),
             },
-            Self::Binary { lhs, rhs, op } => write!(f, "({lhs} {op} {rhs})"),
-            Self::Unary { operand, op } => {
-                use UnOp::*;
-                match op {
-                    Inc | Dec => write!(f, "({operand}{op})"),
-                    _ => write!(f, "({op}{operand})"),
-                }
-            }
+            Self::Binary { lhs, rhs, op } => write!(f, "({op} {lhs} {rhs})"),
+            Self::Assign { lhs, rhs, op } => write!(f, "({op} {lhs} {rhs})"),
+            Self::UnaryPrefix { rhs, op } => write!(f, "({op} {rhs})"),
+            Self::UnaryPostfix { lhs, op } => write!(f, "({lhs} {op})"),
         }
     }
 }
@@ -207,24 +222,25 @@ pub enum Atom {
     },
 }
 
-pub struct Ast<'a, L> {
-    lexer: &'a mut Lexer<'a, L>,
+pub struct Ast<L> {
+    lexer: Lexer<L>,
     next_token: Option<Token>,
 }
 
-impl<'a, L: io::Read> Ast<'a, L> {
-    pub fn new(lexer: &'a mut Lexer<'a, L>) -> Result<Self, Error> {
-        let next_token = lexer.next();
-        Ok(Self {
+impl<L: io::Read> Ast<L> {
+    pub fn new(lexer: Lexer<L>) -> Result<Self, Error> {
+        let mut a = Self {
             lexer: lexer,
-            next_token: match next_token {
-                Some(res) => match res {
-                    Ok(t) => Some(t),
-                    Err(e) => return Err(Error::LexerError(e)),
-                },
-                None => unreachable!(),
+            next_token: None,
+        };
+        a.next_token = match a.lexer.next() {
+            Some(res) => match res {
+                Ok(t) => Some(t),
+                Err(e) => return Err(Error::LexerError(e)),
             },
-        })
+            None => unreachable!(),
+        };
+        Ok(a)
     }
 
     fn peek(&mut self) -> Result<Token, Error> {
@@ -255,9 +271,9 @@ impl<'a, L: io::Read> Ast<'a, L> {
         self.expr_bp(0)
     }
 
-    fn token_to_prefix_un_op(token: Token) -> Option<UnOp> {
+    fn token_to_prefix_un_op(token: Token) -> Option<UnPrefOp> {
         use crate::tokenizer::TokenKind::*;
-        use UnOp as OP;
+        use UnPrefOp as OP;
         Some(match token.kind() {
             Add => OP::Plus,
             Sub => OP::Minus,
@@ -269,9 +285,9 @@ impl<'a, L: io::Read> Ast<'a, L> {
         })
     }
 
-    fn token_to_postfix_un_op(kind: TokenKind) -> Option<UnOp> {
+    fn token_to_postfix_un_op(kind: TokenKind) -> Option<UnPostOp> {
         use crate::tokenizer::TokenKind::*;
-        use UnOp as OP;
+        use UnPostOp as OP;
         Some(match kind {
             Inc => OP::Inc,
             Dec => OP::Dec,
@@ -284,8 +300,8 @@ impl<'a, L: io::Read> Ast<'a, L> {
         use BinOp as OP;
         Some(match kind {
             Dot => OP::Dot,
-            Range => OP::Range,
-            RangeIncl => OP::RangeIncl,
+            Range => OP::Rng,
+            RangeIncl => OP::RngInc,
             ColonColon => OP::ColonColon,
             Add => OP::Add,
             Sub => OP::Sub,
@@ -305,35 +321,40 @@ impl<'a, L: io::Read> Ast<'a, L> {
             ShL => OP::Shl,
             ShR => OP::Shr,
             Xor => OP::Xor,
-
-            Assign => OP::Assign,
-            AddAssign => OP::AddA,
-            SubAssign => OP::SubA,
-            MulAssign => OP::MulA,
-            DivAssign => OP::DivA,
-            ModAssign => OP::ModA,
-            BitOrAssign => OP::BOrA,
-            BitAndAssign => OP::BAndA,
-            ShLAssign => OP::ShlA,
-            ShRAssign => OP::ShrA,
-            XorAssign => OP::XorA,
             _ => return None,
         })
     }
 
-    fn prefix_binding_power(op: UnOp) -> Option<((), u8)> {
-        use UnOp::*;
+    fn token_to_assign_op(kind: TokenKind) -> Option<AssignOp> {
+        use crate::tokenizer::TokenKind::*;
+        use AssignOp as OP;
+        Some(match kind {
+            Assign => OP::Common,
+            AddAssign => OP::Add,
+            SubAssign => OP::Sub,
+            MulAssign => OP::Mul,
+            DivAssign => OP::Div,
+            ModAssign => OP::Mod,
+            BitOrAssign => OP::BOr,
+            BitAndAssign => OP::BAnd,
+            ShLAssign => OP::Shl,
+            ShRAssign => OP::Shr,
+            XorAssign => OP::Xor,
+            _ => return None,
+        })
+    }
+
+    fn prefix_binding_power(op: UnPrefOp) -> ((), u8) {
+        use UnPrefOp::*;
         match op {
-            Plus | Minus | Ref | DRef | Not | BNot => Some(((), 200)),
-            Inc | Dec => None,
+            Plus | Minus | Ref | DRef | Not | BNot => ((), 200),
         }
     }
 
-    fn postfix_binding_power(op: UnOp) -> Option<(u8, ())> {
-        use UnOp::*;
+    fn postfix_binding_power(op: UnPostOp) -> (u8, ()) {
+        use UnPostOp::*;
         match op {
-            Inc | Dec => Some((200, ())),
-            _ => None,
+            Inc | Dec => (200, ()),
         }
     }
     fn infix_binding_power(op: BinOp) -> (u8, u8) {
@@ -341,23 +362,26 @@ impl<'a, L: io::Read> Ast<'a, L> {
         match op {
             ColonColon => (220, 219),
             Dot => (210, 209),
-            Mul | Div | Mod => (150, 149),
-            Add | Sub => (130, 129),
-            Shl | Shr => (120, 119),
-            BAnd => (110, 109),
-            Xor => (100, 99),
-            BOr => (90, 89),
+            Mul | Div | Mod => (149, 150),
+            Add | Sub => (129, 130),
+            Shl | Shr => (119, 120),
+            BAnd => (109, 110),
+            Xor => (99, 100),
+            BOr => (89, 90),
 
-            // non associative
+            // nonassociative
             Eq | Ne | Lt | Le | Gt | Ge => (80, 80),
 
-            And => (70, 69),
-            Or => (60, 59),
-            Range | RangeIncl => (50, 49),
-            // TODO: think about assign later
-            Assign | AddA | SubA | MulA | DivA | ModA | BOrA | BAndA | ShlA | ShrA | XorA => {
-                (40, 39)
-            }
+            And => (69, 70),
+            Or => (59, 60),
+            Rng | RngInc => (50, 50),
+        }
+    }
+
+    fn assign_binding_power(op: AssignOp) -> (u8, u8) {
+        use AssignOp::*;
+        match op {
+            Common | Add | Sub | Mul | Div | Mod | BOr | BAnd | Shl | Shr | Xor => (40, 40),
         }
     }
 
@@ -366,7 +390,7 @@ impl<'a, L: io::Read> Ast<'a, L> {
         if token.kind() == kind {
             return Ok(());
         }
-        Err(Error::unexpected_token_with_expected(token, kind))
+        Err(Error::unexpected_token_with_expected_kind(token, kind))
     }
 
     fn expr_bp(&mut self, min_bp: u8) -> Result<Expr, Error> {
@@ -384,63 +408,66 @@ impl<'a, L: io::Read> Ast<'a, L> {
                 lhs
             }
             _ if let Some(op) = Self::token_to_prefix_un_op(token.clone()) => {
-                let lhs = if let Some(((), rbp)) = Self::prefix_binding_power(op) {
-                    self.expr_bp(rbp)?
-                } else {
-                    return Err(Error::BadToken {
-                        col: token.starts_at_column,
-                        line: token.starts_at_line,
-                        cause: Some(format!("expected prefix unary op, got {:?}", token.kind())),
-                    });
-                };
-                lhs
+                let ((), rbp) = Self::prefix_binding_power(op);
+                self.expr_bp(rbp)?
             }
             _ => todo!(),
         };
         loop {
             let token = self.peek()?;
-            match token.kind() {
-                EOF => break,
-                _ if let Some(op) = Self::token_to_postfix_un_op(token.kind()) => {
-                    if let Some((l_bp, ())) = Self::postfix_binding_power(op) {
-                        if l_bp < min_bp {
-                            break;
-                        }
-                        self.seek()?;
-                        lhs = Expr::Unary {
-                            op,
-                            operand: Box::new(lhs),
-                        };
-                        continue;
-                    }
-                }
-                _ if let Some(op) = Self::token_to_infix_bin_op(token.kind()) => {
-                    let (l_bp, r_bp) = Self::infix_binding_power(op);
-                    if l_bp < min_bp {
-                        break;
-                    }
-                    self.seek()?;
-                    lhs = Expr::Binary {
-                        lhs: Box::new(lhs),
-                        rhs: Box::new(self.expr_bp(r_bp)?),
-                        op,
-                    };
-                    continue;
-                }
-                _ => {
-                    break;
-                    // return Err(Error::BadToken {
-                    //     col: token.clone().starts_at_column,
-                    //     line: token.clone().starts_at_line,
-                    //     cause: Some(format!("expected infix binary op, got {:?}", token.kind())),
-                    // });
-                }
+            if token.kind() == EOF {
+                break;
             }
+            if let Some(op) = Self::token_to_postfix_un_op(token.kind()) {
+                let (l_bp, ()) = Self::postfix_binding_power(op);
+                if l_bp < min_bp {
+                    break;
+                }
+                self.seek()?;
+                lhs = Expr::UnaryPostfix {
+                    op,
+                    lhs: Box::new(lhs),
+                };
+                continue;
+            }
+            if let Some(op) = Self::token_to_infix_bin_op(token.kind()) {
+                let (l_bp, r_bp) = Self::infix_binding_power(op);
+                if l_bp == min_bp {
+                    return Err(Error::RepeatedNonassociativeOP);
+                }
+                if l_bp < min_bp {
+                    break;
+                }
+                self.seek()?;
+                lhs = Expr::Binary {
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(self.expr_bp(r_bp)?),
+                    op,
+                };
+                continue;
+            }
+            if let Some(op) = Self::token_to_assign_op(token.kind()) {
+                let (l_bp, r_bp) = Self::assign_binding_power(op);
+                if l_bp == min_bp {
+                    return Err(Error::RepeatedNonassociativeOP);
+                }
+                if l_bp < min_bp {
+                    break;
+                }
+                self.seek()?;
+                lhs = Expr::Assign {
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(self.expr_bp(r_bp)?),
+                    op,
+                };
+                continue;
+            }
+            break;
         }
         Ok(lhs)
     }
 
-    pub fn build(&mut self) -> Result<Expr, Error> {
+    pub fn build(&mut self) -> Result<(), Error> {
         todo!()
     }
 }
@@ -451,18 +478,36 @@ mod test {
     use crate::{ast::Ast, tokenizer::Lexer};
     use std::io::{Cursor, Read};
 
+    fn new_ast_builder(input: &str) -> Ast<Cursor<Vec<u8>>> {
+        let cursor = Cursor::new(input.as_bytes().to_vec());
+        let bytes_iter = cursor.bytes();
+        let reader = Utf8Reader::new(bytes_iter);
+        let lexer = Lexer::new(reader).expect("unexpected error while creating lexer");
+        let ast = Ast::new(lexer).expect("unexpected error while creating ast builder");
+        ast
+    }
+
     #[test]
     fn basic_expression() {
-        let expr = "1 + (2 + a) * 12".to_string();
-        let mut reader = Utf8Reader::new(Cursor::new(expr.clone().into_bytes()).bytes());
-        let mut lexer = Lexer::new(&mut reader).expect("unexpecetd error while creating lexer");
-        let mut ast_builder =
-            Ast::new(&mut lexer).expect("unexpecetd error while creating ast builder");
+        let expr = "1 + (2 + a) * 12 + 2";
+        let mut ast_builder = new_ast_builder(expr);
         let expr = ast_builder
             .expr()
             .map_err(|e| format!("unexpeceted error: {:?}", e))
             .unwrap();
 
-        assert_eq!(format!("{expr}"), "(1 + ((2 + a) * 12))");
+        assert_eq!(format!("{expr}"), "(+ (+ 1 (* (+ 2 a) 12)) 2)");
+    }
+
+    #[test]
+    fn expressions() {
+        let expr = "a  .  b   +   12   *   12  +   n   |   12";
+        let mut ast_builder = new_ast_builder(expr);
+        let expr = ast_builder
+            .expr()
+            .map_err(|e| format!("unexpeceted error: {:?}", e))
+            .unwrap();
+
+        assert_eq!(format!("{expr}"), "(| (+ (+ (. a b) (* 12 12)) n) 12)");
     }
 }

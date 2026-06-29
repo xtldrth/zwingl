@@ -20,6 +20,18 @@ fn identifier_or_keyword(s: String) -> TokenKind {
         "for" => For,
         "return" => Return,
         "in" => In,
+        "u8" => UintType(8),
+        "u16" => UintType(16),
+        "u32" => UintType(32),
+        "u64" => UintType(64),
+        "i8" => IntType(8),
+        "i16" => IntType(16),
+        "i32" => IntType(32),
+        "i64" => IntType(64),
+        "f16" => FloatType(16),
+        "f32" => FloatType(32),
+        "f64" => FloatType(64),
+        "str" => StringType,
         _ => Identifier(s),
     }
 }
@@ -62,10 +74,11 @@ pub enum TokenKind {
     Dot,         // .
     ArrowLeft,   // <-
     ArrowRight,  // ->
-    Range,       // ..
-    RangeIncl,   // ..=
+    Rng,         // ..
+    RngInc,      // ..=
     Colon,       // :
     ColonColon,  // ::
+    Semicolon,   // ;
     Add,         // +
     Inc,         // ++
     Sub,         // -
@@ -121,6 +134,11 @@ pub enum TokenKind {
     Return,             //  return
     In,                 //  in
     Identifier(String), //  starts with _ or any letter and can contain any letter or digit or '_'
+
+    FloatType(usize),
+    IntType(usize),
+    UintType(usize),
+    StringType,
     EOF,
 }
 
@@ -134,6 +152,8 @@ impl PartialEq for TokenKind {
 pub struct Lexer<R> {
     chars_reader: Utf8Reader<R>,
     current_char: Option<char>,
+    second_char: Option<char>,
+    third_char: Option<char>,
     col: usize,
     line: usize,
     is_eof_reached: bool,
@@ -144,11 +164,27 @@ impl<R: io::Read> Lexer<R> {
         let mut l = Self {
             chars_reader,
             current_char: None,
+            second_char: None,
+            third_char: None,
             col: 0,
             line: 1,
             is_eof_reached: false,
         };
         l.current_char = match l.chars_reader.next() {
+            Some(res) => match res {
+                Ok(c) => Some(c),
+                Err(e) => return Err(Error::ReaderError(e)),
+            },
+            None => None,
+        };
+        l.second_char = match l.chars_reader.next() {
+            Some(res) => match res {
+                Ok(c) => Some(c),
+                Err(e) => return Err(Error::ReaderError(e)),
+            },
+            None => None,
+        };
+        l.third_char = match l.chars_reader.next() {
             Some(res) => match res {
                 Ok(c) => Some(c),
                 Err(e) => return Err(Error::ReaderError(e)),
@@ -167,8 +203,20 @@ impl<R: io::Read> Lexer<R> {
             None => Ok(None),
         }
     }
+
+    fn peek(&self) -> Option<char> {
+        self.current_char
+    }
+    fn peek_2nd(&self) -> Option<char> {
+        self.second_char
+    }
+    fn peek_3rd(&self) -> Option<char> {
+        self.third_char
+    }
     fn seek(&mut self) -> Result<Option<char>, Error> {
-        self.current_char = self.get_next_char()?;
+        self.current_char = self.second_char;
+        self.second_char = self.third_char;
+        self.third_char = self.get_next_char()?;
         self.col += 1;
         Ok(self.current_char)
     }
@@ -228,10 +276,11 @@ impl<R: io::Read> Lexer<R> {
             '[' => LBraket,
             ']' => RBraket,
             ',' => Comma,
+            ';' => Semicolon,
             '.' => {
                 let next_char = self.seek()?;
-                let token = match self.advice_if_match('.', Dot, Range, next_char)? {
-                    Range => self.advice_if_match('=', Range, RangeIncl, self.current_char)?,
+                let token = match self.advice_if_match('.', Dot, Rng, next_char)? {
+                    Rng => self.advice_if_match('=', Rng, RngInc, self.current_char)?,
                     _ => Dot,
                 };
                 return Ok(Some(token));
@@ -371,13 +420,13 @@ impl<R: io::Read> Lexer<R> {
                     }
                 }
                 '.' => {
+                    if let Some(ch) = self.peek_2nd()
+                        && !ch.is_numeric()
+                    {
+                        break;
+                    }
                     if is_float {
-                        return Err(Error::LexerError {
-                            cause: "symbol . (dot) cannot appear in float number literal twice"
-                                .into(),
-                            line: self.line,
-                            column: self.col,
-                        });
+                        break;
                     } else {
                         num_chars.push(c);
                         is_float = true;
@@ -595,8 +644,8 @@ identifier
             Dot,
             ArrowLeft,
             ArrowRight,
-            Range,
-            RangeIncl,
+            Rng,
+            RngInc,
             Colon,
             ColonColon,
             Add,
@@ -699,6 +748,38 @@ identifier
                 token_result.unwrap().kind,
                 String("this is a string".to_string())
             )
+        }
+    }
+
+    #[test]
+    fn numbers() {
+        use crate::tokenizer::TokenKind::*;
+        let mut lexer = new_lexer("12 12.12 12..12 12.1_2, 1 2 3 1.a");
+        let expected_token_kinds = vec![
+            Int(12),
+            Float(12.12),
+            Int(12),
+            Rng,
+            Int(12),
+            Float(12.12),
+            Comma,
+            Int(1),
+            Int(2),
+            Int(3),
+            Int(1),
+            Dot,
+            Identifier("a".into()),
+        ];
+        for (i, (got, expected)) in lexer.zip(expected_token_kinds).enumerate().into_iter() {
+            match got {
+                Ok(t) => assert!(
+                    t.kind() == expected,
+                    "tokens don't match at index {i}\nExpected:\n{:?}\nGot:\n{:?}\n",
+                    expected,
+                    t.kind(),
+                ),
+                Err(e) => panic!("unexpecetd: {e:?}"),
+            }
         }
     }
 }

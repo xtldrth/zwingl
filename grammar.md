@@ -1,3 +1,4 @@
+```
 IDENTIFIER      = (LETTER | "_") {LETTER | DIGIT | "_"} ;
 INT_LITERAL     = NUMBER ;
 FLOAT_LITERAL   = (NUMBER "." NUMBER) | ("." NUMBER) ;
@@ -46,3 +47,4 @@ BLOCK = "{" { STATEMENT } "}" ;
 NUMBER = DIGIT {DIGIT | ("_" DIGIT)} ;
 LETTER = ANY_LETTER ;
 DIGIT  = 0-9 ;
+```

@@ -1,3 +1,5 @@
+// just because i want it 😉
+
 use core::fmt;
 use std::io;
 
